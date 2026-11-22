@@ -1,6 +1,6 @@
 //! The cut-and-choose's shared parts (BABE; agent notes:
 //! docs/BABE_GADGET_PLAN.md), as the hub-proves opening uses them
-//! ([`crate::hp`]): an opened instance, the soundness a wallet asks, the
+//! ([`crate::hp`]): an opened instance, the network's cut-and-choose, the
 //! dealing's and the shares' encodings; and what a dispute reads off the
 //! chain: a link's arguments, `assert`'s proof.
 
@@ -32,12 +32,17 @@ impl Opened {
     }
 }
 
-/// The least soundness a wallet accepts of the cut-and-choose, as bits:
-/// `C(N, M) ≥ 2^bits` (regtest's tests keep a few instances).
-pub fn min_soundness(net: Net) -> u32 {
+/// The cut-and-choose on a network: `N` instances, `M` kept. BABE's
+/// smallest point with secret sharing, (78, 10): a cheating garbler
+/// escapes with odds of 1 in `C(78, 10)`, about 2^40. Regtest's tests keep
+/// 2 of 4. Fixed, not the hub's choice: the dealing is drawn from the
+/// contract's seed and journal alone, so an opening resumed with another
+/// `N` would open shares of other polynomials from the same draw, and
+/// with the first opening's, solve for the whole dealing.
+pub fn cut_and_choose(net: Net) -> (u32, u32) {
     match net {
-        Net::Regtest => 2,
-        _ => 40,
+        Net::Regtest => (4, 2),
+        _ => (78, 10),
     }
 }
 
