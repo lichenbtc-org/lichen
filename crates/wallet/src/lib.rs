@@ -457,7 +457,7 @@ impl<L: WalletL2> Wallet<L> {
         // the request opens the instances not kept: kept first, so that a
         // resumed opening can only open these again
         let sent = SentOpening { journal: hp_open.journal, kept: hp_open.kept.clone() };
-        let d = self.deposits.iter_mut().find(|d| d.cid == dep.cid).context("the deposit's record")?;
+        let d = self.deposits.iter_mut().find(|d| d.nonce == dep.nonce).context("the deposit's record")?;
         if !d.sent.contains(&sent) {
             d.sent.push(sent);
             self.save()?;

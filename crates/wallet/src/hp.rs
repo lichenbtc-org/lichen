@@ -5,9 +5,9 @@
 
 use anyhow::{ensure, Context, Result};
 use lichen_babe::graph::Graph;
-use lichen_babe::opening::{soundness, Garbler};
+use lichen_babe::opening::Garbler;
 use lichen_babe::setup::VALUES;
-use lichen_proto::setup::{dealing_to_hex, min_soundness, Opened};
+use lichen_proto::setup::{cut_and_choose, dealing_to_hex, Opened};
 use lichen_proto::hp::{check_setup, HpCommit, HpKept, HpKeys, HpOffer, HpRequest, HpSetup, HpSetupRequest};
 use lichen_proto::{Hash, Net, Statement};
 use lichen_contract::Presign;
@@ -47,7 +47,9 @@ impl<L: WalletL2> Wallet<L> {
         L::check_setup(self, chain, &setup, &asked)?;
         check_setup(&setup)?;
         let (n, m) = (setup.n, setup.m);
-        ensure!(soundness(n, m) >= min_soundness(net), "keeping {m} of {n} instances: a cheating garbler escapes with odds of 1 in 2^{}, not 2^{}", soundness(n, m), min_soundness(net));
+        // the network's, never another: her dealing doesn't bind N, so a
+        // resumed opening with another would solve for it with the first
+        ensure!((n, m) == cut_and_choose(net), "the hub keeps {m} of {n} instances, not the network's {:?}", cut_and_choose(net));
         let keys = L::alice_keys(s);
         let journal = L::setup_journal(cid, &setup, &keys)?;
         let journal_hash: Hash = sha2::Sha256::digest(&journal).into();
@@ -133,7 +135,8 @@ impl<R: std::io::Read> std::io::Read for Counted<'_, R> {
 
 /// The kept set the hub chose, against the openings sent before for this
 /// deposit. For the same journal her instances are the same ones (from the
-/// contract's seed and the journal), so the hub must keep the same set
+/// contract's seed and the journal, `N` and `M` the network's), so the hub
+/// must keep the same set
 /// again: opening any other would hand it the seeds of instances it keeps,
 /// and so their `msg`s, an answer to her challenge without a valid proof.
 /// For another journal they are other instances, and any set will do.
@@ -160,6 +163,15 @@ mod tests {
         assert!(check_kept(&sent, &j, &[2]).is_err());
         // another journal: other instances, any set
         assert!(check_kept(&sent, &other, &[1, 3]).is_ok());
+    }
+
+    #[test]
+    fn the_cut_and_choose_is_sound_enough() {
+        // 2^40 off regtest
+        for net in [Net::Mutinynet, Net::Signet, Net::Testnet4] {
+            let (n, m) = cut_and_choose(net);
+            assert!(lichen_babe::opening::soundness(n, m) >= 40, "{net:?}");
+        }
     }
 
     #[test]

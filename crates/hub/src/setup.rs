@@ -14,7 +14,7 @@ use lichen_babe::opening::{check, choose};
 use lichen_babe::setup::{Hash, Instance, DIGITS, VALUES};
 use lichen_btc::keys::Seed;
 use lichen_proto::hp::{check_commit, HpCommit, HpKept, HpKeys, HpOffer, HpSetup, HpSetupRequest};
-use lichen_proto::setup::{dealing_from_hex, Opened};
+use lichen_proto::setup::{cut_and_choose, dealing_from_hex, Opened};
 use lichen_proto::{OpenRequest, Presig, Record};
 use rand_chacha::ChaCha20Rng;
 use rand_core::SeedableRng;
@@ -50,16 +50,6 @@ pub(crate) struct Prepared {
     /// The instances not kept, opened (at the opening).
     #[serde(default)]
     pub(crate) opened: Vec<Opened>,
-}
-
-/// The cut-and-choose on a network: `N` instances, `M` kept. BABE's
-/// smallest point with secret sharing, (78, 10); regtest's tests keep 2
-/// of 4.
-pub fn cut_and_choose(net: lichen_proto::Net) -> (u32, u32) {
-    match net {
-        lichen_proto::Net::Regtest => (4, 2),
-        _ => (78, 10),
-    }
 }
 
 impl<L: HubL2> Inner<L> {
