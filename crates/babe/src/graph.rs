@@ -116,6 +116,12 @@ pub trait Front: Send + Sync {
     /// What `wrongly_challenged_k` pays (the user challenged a valid
     /// proof): everything to the hub, by default, the cost of a challenge
     /// she could have known was wrong by checking the proof first.
+    ///
+    /// This only chooses the transactions. The stock wallet and hub
+    /// assume the default: the wallet records the contract as lost and the
+    /// hub closes it without collecting. A front that returns another
+    /// payout must collect it itself (sweep its outputs of
+    /// `wrongly_challenged_k`), or they stay unspent without an error.
     fn wrongly_challenged(&self) -> Payout {
         Payout::Hub
     }
