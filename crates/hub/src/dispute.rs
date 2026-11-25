@@ -302,6 +302,29 @@ impl<L: HubL2> Inner<L> {
         Ok(None)
     }
 
+    /// The proof the hub asserted for `d`, made again as [`Self::hp_assert`]
+    /// made it: the mock's (or the forged one) from the journal, the
+    /// prover's from its seal. None if its prover has not made one. Nothing
+    /// is kept for it: the chain's π2 and π3 may not be the hub's.
+    fn hp_made(&self, d: &Disputed) -> Result<Option<ark_groth16::Proof<ark_bn254::Bn254>>> {
+        let cid = d.record.cid();
+        let mut journal = self.l2.journal(&d.record)?;
+        if self.forge_assertions.load(std::sync::atomic::Ordering::Relaxed) {
+            journal[0] ^= 1;
+            return Ok(Some(lichen_babe::statement::mock_prove(&journal)));
+        }
+        match self.cfg.statement.hp_kind()? {
+            lichen_babe::statement::Kind::Mock => Ok(Some(lichen_babe::statement::mock_prove(&journal))),
+            lichen_babe::statement::Kind::Risc0(_) => {
+                let seal = self.hp_dir(cid).join("proof.seal");
+                if !seal.exists() {
+                    return Ok(None);
+                }
+                Ok(Some(lichen_babe::risc0::proof_from_seal(&std::fs::read(&seal)?).context("the prover's seal")?))
+            }
+        }
+    }
+
     /// The answer to her challenge: π1's secrets from it (her completions
     /// of the hub's pre-signatures), each kept instance's from them and the
     /// opened shares, its circuit evaluated on the asserted π1, and the
@@ -311,7 +334,14 @@ impl<L: HubL2> Inner<L> {
         let cid = d.record.cid();
         let keys = d.record.hp();
         let asserted = d.asserted(&self.chain.get_tx(&d.txid("assert")).context("the assertion")?)?;
-        let proof = asserted.proof.clone().context("the assertion's points aren't points")?;
+        let own = match self.hp_made(d) {
+            Ok(own) => own,
+            Err(e) => {
+                self.note_once(format!("contract {cid}: the proof it asserted: {e:#}"));
+                None
+            }
+        };
+        let proof = asserted.answered_on(own).context("no proof of the assertion's π1: neither the hub's nor the chain's")?;
         let tx = self.chain.get_tx(&d.txid("challenge_assert")).context("the challenge")?;
         let presigs: Vec<[AdaptorSig; lichen_babe::setup::VALUES]> = keys.hub_presigs.iter().map(|s| s.each_ref().map(AdaptorSig::from)).collect();
         let (posted, revealed) = extract(&keys.hub_lamport, &presigs, &link_args(&tx)).context("the challenge's secrets")?;
