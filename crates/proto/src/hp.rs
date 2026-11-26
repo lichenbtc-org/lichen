@@ -129,7 +129,7 @@ impl HpKeys {
     }
     /// BABE's tail of the graph.
     pub fn tail(&self) -> lichen_babe::graph::Tail {
-        lichen_babe::graph::Tail { lamport: self.hub_lamport.clone(), adaptor: self.hub_adaptor.clone(), hmsg: self.hmsg.clone(), windows: self.hp_windows }
+        lichen_babe::graph::Tail { lamport: self.hub_lamport.clone(), adaptor: self.hub_adaptor.clone(), hmsg: self.hmsg.clone(), windows: self.hp_windows, pair: false }
     }
 }
 
@@ -226,7 +226,7 @@ impl Disputed {
     /// Lamport key) and their preimages.
     pub fn asserted(&self, assert: &bitcoin::Transaction) -> Result<crate::setup::Asserted> {
         let args = crate::setup::link_args(assert);
-        let signed = Graph::read_assert(&args).context("assert's arguments")?;
+        let (signed, _) = Graph::read_assert(&args).context("assert's arguments")?;
         let lamport = &self.graph.tail.lamport;
         let preimages: Vec<lichen_babe::reveal::Preimage> = signed.iter().map(|a| a[..].try_into().context("a preimage's length")).collect::<Result<_>>()?;
         let digits: Vec<u8> = preimages.iter().enumerate().map(|(d, p)| lamport.read(d, p).context("a preimage of no digit")).collect::<Result<_>>()?;

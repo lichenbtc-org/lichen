@@ -50,7 +50,7 @@ fn graph(extra: Vec<TxOut>, wrongly: Option<Payout>) -> anyhow::Result<Graph> {
     let terms = Terms { id: 1, unit: Amount::from_sat(1_000), bits: 10, low_bits: 0, deposit: 400, t_close: 100_000, reserve_alice: Amount::from_sat(20_000), reserve_hub: Amount::from_sat(100_000), rest: 0 };
     let front = OneLink { terms, params: ContractParams::regtest(Amount::ZERO), pubs: [alice.public(), hub.public()], close: ScriptBuf::from_bytes(vec![0x51, 0x20, 7]), extra, wrongly };
     let seed = Seed::from_label("hub/prover");
-    let tail = Tail { lamport: LamportKey::new(&seed, DIGITS).public(), adaptor: AdaptorKeys::new(&seed, DIGITS).public(), hmsg: vec![[1; 32], [2; 32]], windows: Windows { delta2: 3, delta1: 3 } };
+    let tail = Tail { lamport: LamportKey::new(&seed, DIGITS).public(), adaptor: AdaptorKeys::new(&seed, DIGITS).public(), hmsg: vec![[1; 32], [2; 32]], windows: Windows { delta2: 3, delta1: 3 }, pair: false };
     Graph::new(Box::new(front), tail)
 }
 

@@ -61,13 +61,16 @@ pub struct Windows {
 
 /// What BABE's tail is built from: the hub's Lamport key for π1 (2-bit
 /// digits) and its one-time adaptor keys, a digit and value; the kept
-/// instances' hashlocks, `SHA-256(msg)`; the windows.
+/// instances' hashlocks, `SHA-256(msg)`; the windows; and whether
+/// `assert` carries π2 and π3 beside π1, its leaf dropping them unread, as
+/// graphs made before they went off chain do (an L2 keeping those).
 #[derive(Clone, Debug)]
 pub struct Tail {
     pub lamport: LamportPub,
     pub adaptor: Vec<[XOnlyPublicKey; VALUES]>,
     pub hmsg: Vec<Hash>,
     pub windows: Windows,
+    pub pair: bool,
 }
 
 /// Who a terminal pays: the user's claim (her bit outputs read her
@@ -213,9 +216,11 @@ impl Graph {
     /// txid the same, and so have her challenge a true assertion; nor does
     /// the chain have to carry what a hub withholding them could as well
     /// post false. She challenges an assertion she has no valid proof of.
+    /// With [`Tail::pair`], π2 and π3 beside π1, dropped unread.
     fn assert_leaf(&self) -> Leaf {
         let (b, tl) = signed(&self.ctx(), after(POST_CSV));
-        ok_leaf("assert", self.tail.lamport.verify(b), tl)
+        let b = self.tail.lamport.verify(b);
+        ok_leaf("assert", if self.tail.pair { b.push_opcode(OP_2DROP) } else { b }, tl)
     }
     /// `assert`'s output: the user's `challenge_assert`, the reveal; or,
     /// after `Δ2`, `success`.
@@ -257,7 +262,8 @@ impl Graph {
             let tree = TapTree::new(vec![next, terminal_leaf(&ctx, l.terminal, l.window)])?;
             out.push((l.name.to_string(), l.poster, l.shape.clone(), l.extra.clone(), tree, l.terminal.to_string(), l.pays));
         }
-        let assert_shape = vec![vec![0u8; 20]; DIGITS];
+        let pair = if self.tail.pair { vec![vec![0u8; 64], vec![0u8; 32]] } else { vec![] };
+        let assert_shape = vec![vec![0u8; 20]; DIGITS].into_iter().chain(pair).collect();
         out.push(("assert".into(), Role::Hub, assert_shape, vec![], self.asserted()?, "success".into(), self.front.success()));
         let challenge_shape = (0..DIGITS).flat_map(|_| [vec![0u8; 20], vec![0u8; 64]]).collect();
         out.push(("challenge_assert".into(), Role::User, challenge_shape, vec![], self.challenged()?, "failure".into(), Payout::User));
@@ -330,10 +336,19 @@ impl Graph {
     pub fn assert_wire(preimages: &[Preimage]) -> Vec<Vec<u8>> {
         preimages.iter().rev().map(|p| p.to_vec()).collect()
     }
+    /// `assert`'s with [`Tail::pair`]: π1's digits, then π2 and π3.
+    pub fn assert_wire_with_pair(preimages: &[Preimage], pi2: &[u8], pi3: &[u8]) -> Vec<Vec<u8>> {
+        [pi3.to_vec(), pi2.to_vec()].into_iter().chain(Self::assert_wire(preimages)).collect()
+    }
     /// Read `assert`'s arguments (consumption order, below both
-    /// signatures): π1's preimages.
-    pub fn read_assert(args: &[Vec<u8>]) -> Option<&[Vec<u8>]> {
-        (args.len() == DIGITS).then_some(args)
+    /// signatures): π1's preimages, then π2 and π3 if it carries them
+    /// ([`Tail::pair`]; its leaf fixes which).
+    pub fn read_assert(args: &[Vec<u8>]) -> Option<(&[Vec<u8>], Option<(&[u8], &[u8])>)> {
+        match args.len() {
+            n if n == DIGITS => Some((args, None)),
+            n if n == DIGITS + 2 => Some((&args[..DIGITS], Some((&args[DIGITS][..], &args[DIGITS + 1][..])))),
+            _ => None,
+        }
     }
     /// `challenge_assert`'s: the reveal ([`crate::reveal::reveal_args`]).
     pub fn challenge_wire(args: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
@@ -359,15 +374,31 @@ pub fn txid_in(set: &[Presign], name: &str) -> Result<Txid> {
 mod tests {
     use super::*;
 
+    /// `assert`'s arguments as `read_assert` takes them: its wire, last
+    /// pushed first.
+    fn args(wire: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
+        wire.into_iter().rev().collect()
+    }
+
+    fn preimages() -> Vec<Preimage> {
+        (0..DIGITS).map(|i| [i as u8; 20]).collect()
+    }
+
     #[test]
     fn assert_carries_pi1s_preimages_alone() {
-        let preimages: Vec<Preimage> = (0..DIGITS).map(|i| [i as u8; 20]).collect();
-        let wire = Graph::assert_wire(&preimages);
-        assert_eq!(wire.len(), DIGITS);
-        let read = Graph::read_assert(&wire).unwrap();
-        assert_eq!(read.iter().rev().map(|p| p[..].to_vec()).collect::<Vec<_>>(), preimages.iter().map(|p| p.to_vec()).collect::<Vec<_>>());
-        // π2 and π3 beside them, as `assert` carried them before: refused.
-        let with_pair: Vec<Vec<u8>> = [vec![0u8; 32], vec![0u8; 64]].into_iter().chain(wire).collect();
-        assert!(Graph::read_assert(&with_pair).is_none());
+        let args = args(Graph::assert_wire(&preimages()));
+        assert_eq!(args.len(), DIGITS);
+        let (read, pair) = Graph::read_assert(&args).unwrap();
+        assert_eq!(read, preimages().iter().map(|p| p.to_vec()).collect::<Vec<_>>());
+        assert_eq!(pair, None);
+        assert!(Graph::read_assert(&args[1..]).is_none());
+    }
+
+    #[test]
+    fn an_assert_with_its_pair_carries_pi2_and_pi3_beside_pi1() {
+        let args = args(Graph::assert_wire_with_pair(&preimages(), &[2; 64], &[3; 32]));
+        let (read, pair) = Graph::read_assert(&args).unwrap();
+        assert_eq!(read, preimages().iter().map(|p| p.to_vec()).collect::<Vec<_>>());
+        assert_eq!(pair, Some((&[2u8; 64][..], &[3u8; 32][..])));
     }
 }
