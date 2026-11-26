@@ -115,7 +115,7 @@ impl<'a> Core<'a> {
         Presign::new("default", tree, "default", funding, &c_out, outs, false)
     }
     /// The outputs paying `b` in bits (read from Alice's signature under
-    /// `b_key`) and both reserves to Alice, the rest to the hub;
+    /// `b_key`, [`Terms::word`]) and both reserves to Alice, the rest to the hub;
     /// `available` is what the output carries, the contract's value less
     /// the floors and anchors of the links played, which come out of the
     /// hub's forfeited reserve (D-J2).
@@ -140,9 +140,11 @@ impl<'a> Core<'a> {
         let floors = self.value().checked_sub(available).context("an output carries more than the contract")?;
         payout_less_signed(&self.ctx(), self.terms, key, signer, available, Amount::ZERO, floors)
     }
-    /// `party`'s outputs of `payout`, a terminal paying the value `value`
-    /// that `signer` signed under `key` ([`payout_less_signed`]): for each
-    /// bit of the value, the set ones Alice's and the clear ones the hub's;
+    /// `party`'s outputs of `payout`, a terminal paying the word `value`
+    /// that `signer` signed under `key` ([`payout_less_signed`], the word as
+    /// signed, not as [`Terms::word`] would make it of what it counts): for
+    /// each bit of the word with an output, the set ones Alice's and the
+    /// clear ones the hub's;
     /// and the signer's reserve output, if any. The signer's wait `delta`
     /// (the other's window on a second signed value); the other's don't.
     /// In output order; an output not of its script (none paid) is
@@ -152,7 +154,7 @@ impl<'a> Core<'a> {
         let txid = payout.compute_txid();
         let sequence = if party == signer { Sequence::from_height(self.params.delta) } else { Sequence::ENABLE_RBF_NO_LOCKTIME };
         let mut outs: Vec<(u32, TapTree, String, bool)> = vec![];
-        for i in t.low_bits..t.bits {
+        for i in t.paid_bits() {
             let set = (value >> i) & 1 == 1;
             if set == (party == Role::User) {
                 let name = if set { format!("alice_bit_{i}") } else { format!("hub_bit_{i}") };
@@ -160,9 +162,10 @@ impl<'a> Core<'a> {
             }
         }
         if party == signer {
+            let bits = t.paid_bits().len() as u32;
             let (vout, name) = match signer {
-                Role::User => (t.bits - t.low_bits, "alice_reserve"),
-                Role::Hub => (t.bits - t.low_bits + 1, "hub_reserve"),
+                Role::User => (bits, "alice_reserve"),
+                Role::Hub => (bits + 1, "hub_reserve"),
             };
             outs.push((vout, reserve_tree_signed(&ctx, t, key, signer)?, name.into(), false));
         }
