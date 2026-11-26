@@ -314,8 +314,8 @@ impl Ask {
         ensure!(self.liquidity <= info.max_liquidity, "liquidity of {} sats, above the hub's most, {}", self.liquidity, info.max_liquidity);
         let fee = info.fee(self.deposit, self.liquidity);
         ensure!(fee < self.deposit, "a deposit of {} sats doesn't cover the hub's fee of {fee}", self.deposit);
-        let (bits, unit) = lichen_proto::scale(self.deposit - fee + self.liquidity)?;
-        Ok(Quote { fee, minted: self.deposit - fee, cap: unit * ((1u64 << bits) - 1), unit })
+        let scaled = lichen_proto::scale(self.deposit - fee + self.liquidity)?;
+        Ok(Quote { fee, minted: self.deposit - fee, cap: scaled.v_max(), unit: scaled.unit })
     }
 }
 

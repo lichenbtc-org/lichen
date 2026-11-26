@@ -462,8 +462,7 @@ impl<L: HubL2> Inner<L> {
             ensure!(req.liquidity <= self.cfg.max_liquidity, "liquidity of {} sats, above the hub's most, {}", req.liquidity, self.cfg.max_liquidity);
             let fee = self.info().fee(req.deposit, req.liquidity);
             ensure!(fee < req.deposit, "a deposit of {} sats doesn't cover the hub's fee of {fee}", req.deposit);
-            let (bits, unit) = lichen_proto::scale(req.deposit - fee + req.liquidity)?;
-            let v_max = unit * ((1u64 << bits) - 1);
+            let v_max = lichen_proto::scale(req.deposit - fee + req.liquidity)?.v_max();
             let floors = self.floors.lock().unwrap().unwrap_or(0);
             let reserve_hub = (v_max * self.cfg.reserve_ppm / 1_000_000).max(floors);
             let need = Amount::from_sat(v_max.saturating_sub(req.deposit) + reserve_hub) + FEE_SHARE + FUNDING_MARGIN;
