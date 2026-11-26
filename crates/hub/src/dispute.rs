@@ -254,8 +254,7 @@ impl<L: HubL2> Inner<L> {
             }
         };
         let bits = lichen_babe::gadget::input(&proof.a);
-        let (pi2, pi3) = lichen_babe::statement::pi23_to_bytes(&proof);
-        let wire = Graph::assert_wire(&hub_lamport(&self.cfg.seed, cid).sign(&digits(&bits)), &pi2, &pi3);
+        let wire = Graph::assert_wire(&hub_lamport(&self.cfg.seed, cid).sign(&digits(&bits)));
         let tx = d.finish("assert", wire)?;
         self.post(cid, &tx)?;
         self.note(format!("contract {cid}: asserted ({} vB)", tx.vsize()));
@@ -305,7 +304,7 @@ impl<L: HubL2> Inner<L> {
     /// The proof the hub asserted for `d`, made again as [`Self::hp_assert`]
     /// made it: the mock's (or the forged one) from the journal, the
     /// prover's from its seal. None if its prover has not made one. Nothing
-    /// is kept for it: the chain's π2 and π3 may not be the hub's.
+    /// more is kept for it.
     fn hp_made(&self, d: &Disputed) -> Result<Option<ark_groth16::Proof<ark_bn254::Bn254>>> {
         let cid = d.record.cid();
         let mut journal = self.l2.journal(&d.record)?;
@@ -325,6 +324,19 @@ impl<L: HubL2> Inner<L> {
         }
     }
 
+    /// π2 and π3 of the proof the hub asserted in contract `r.cid`'s
+    /// dispute (`POST /hp/proof`), which `assert` does not carry: the user
+    /// checks the whole proof with them before she lets it stand. Refused
+    /// before it asserts, or if its proof is not of the π1 asserted.
+    pub(crate) fn hp_proof_parts(&self, r: lichen_proto::ProofRequest) -> Result<lichen_proto::ProofParts> {
+        let o = self.open.lock().unwrap().get(&r.cid).cloned().context("no such contract")?;
+        let d = Disputed::new(&o.record, &self.cfg.statement, &self.l2)?;
+        let assert = self.chain.get_tx(&d.txid("assert")).context("the hub has not asserted")?;
+        let proof = d.asserted(&assert)?.answered_on(self.hp_made(&d)?).context("no proof of the π1 asserted")?;
+        let (pi2, pi3) = lichen_babe::statement::pi23_to_bytes(&proof);
+        Ok(lichen_proto::ProofParts { pi2, pi3 })
+    }
+
     /// The answer to her challenge: π1's secrets from it (her completions
     /// of the hub's pre-signatures), each kept instance's from them and the
     /// opened shares, its circuit evaluated on the asserted π1, and the
@@ -341,7 +353,7 @@ impl<L: HubL2> Inner<L> {
                 None
             }
         };
-        let proof = asserted.answered_on(own).context("no proof of the assertion's π1: neither the hub's nor the chain's")?;
+        let proof = asserted.answered_on(own).context("no proof of the assertion's π1")?;
         let tx = self.chain.get_tx(&d.txid("challenge_assert")).context("the challenge")?;
         let presigs: Vec<[AdaptorSig; lichen_babe::setup::VALUES]> = keys.hub_presigs.iter().map(|s| s.each_ref().map(AdaptorSig::from)).collect();
         let (posted, revealed) = extract(&keys.hub_lamport, &presigs, &link_args(&tx)).context("the challenge's secrets")?;

@@ -440,6 +440,25 @@ pub struct FoldNonce {
     pub nonce: Vec<u8>,
 }
 
+/// The rest of the proof the hub asserted in contract `cid`'s dispute
+/// (`POST /hp/proof`): π2 and π3, which `assert` does not carry. The user
+/// checks the whole proof with them, π1 the chain's, before she lets the
+/// assertion stand; none, or none that proves, she challenges.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProofRequest {
+    pub cid: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProofParts {
+    /// π2, compressed (64 bytes).
+    #[serde(with = "lichen_babe::hexbytes::bytes")]
+    pub pi2: Vec<u8>,
+    /// π3, compressed (32 bytes).
+    #[serde(with = "lichen_babe::hexbytes::bytes")]
+    pub pi3: Vec<u8>,
+}
+
 /// A cooperative withdrawal (`POST /withdraw`): Alice's claim of `b`
 /// units from contract `cid` (`Q`'s bytes, hex: her account's live note),
 /// which the hub takes into its book, closing the account, and her half
