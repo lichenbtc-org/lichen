@@ -89,48 +89,63 @@ pub fn link_args(tx: &bitcoin::Transaction) -> Vec<Vec<u8>> {
     lichen_btc::witness::witness_args_consumption_order(&tx.input[0].witness).into_iter().skip(2).collect()
 }
 
-/// What `assert` put on chain.
+/// What `assert` put on chain: π1, signed. π2 and π3 the hub hands over
+/// off chain ([`crate::ProofParts`]).
 pub struct Asserted {
     pub digits: Vec<u8>,
     pub bits: Vec<bool>,
     pub preimages: Vec<lichen_babe::reveal::Preimage>,
-    pub proof: Option<ark_groth16::Proof<ark_bn254::Bn254>>,
 }
 
 impl Asserted {
+    /// The whole proof, π1 the chain's and π2 and π3 `pi2` and `pi3` (as
+    /// the hub hands them over), if they are points.
+    pub fn proof(&self, pi2: &[u8], pi3: &[u8]) -> Option<ark_groth16::Proof<ark_bn254::Bn254>> {
+        lichen_babe::statement::proof_of(&self.bits, pi2, pi3)
+    }
+
     /// The proof the hub answers a challenge on: `own`, the one it made
-    /// and asserted, if it signs the π1 on chain; else the one on chain.
-    /// `assert`'s leaf checks π1's digits but not π2 and π3 beside them,
-    /// so whoever relays or mines it can replace those, its txid the
-    /// same, and the proof on chain no longer verify.
+    /// and asserted, if it is of the π1 on chain. The chain carries no π2
+    /// and π3 to fall back on.
     pub fn answered_on(&self, own: Option<ark_groth16::Proof<ark_bn254::Bn254>>) -> Option<ark_groth16::Proof<ark_bn254::Bn254>> {
-        own.filter(|p| lichen_babe::gadget::input(&p.a) == self.bits).or_else(|| self.proof.clone())
+        own.filter(|p| lichen_babe::gadget::input(&p.a) == self.bits)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::Asserted;
-    use lichen_babe::statement::mock_prove;
+    use lichen_babe::statement::{mock_prove, pi23_to_bytes};
 
-    fn asserted(proof: &ark_groth16::Proof<ark_bn254::Bn254>, on_chain: bool) -> Asserted {
+    fn asserted(proof: &ark_groth16::Proof<ark_bn254::Bn254>) -> Asserted {
         let bits = lichen_babe::gadget::input(&proof.a);
         let digits = lichen_babe::setup::digits(&bits);
-        Asserted { digits, bits, preimages: vec![], proof: on_chain.then(|| proof.clone()) }
+        Asserted { digits, bits, preimages: vec![] }
     }
 
     #[test]
-    fn a_challenge_is_answered_on_the_hubs_proof_whatever_pi2_and_pi3_the_chain_shows() {
+    fn a_challenge_is_answered_on_the_hubs_own_proof_of_the_asserted_pi1() {
         let proof = mock_prove(b"journal");
-        // π2 and π3 replaced: no proof on chain, the hub's own answers.
-        let replaced = asserted(&proof, false);
-        assert_eq!(replaced.answered_on(Some(proof.clone())), Some(proof.clone()));
-        assert_eq!(replaced.answered_on(None), None);
-        // Another π1 than its own (say, of another journal): the chain's.
+        let on_chain = asserted(&proof);
+        assert_eq!(on_chain.answered_on(Some(proof.clone())), Some(proof.clone()));
+        assert_eq!(on_chain.answered_on(None), None);
+        // Another π1 than the one asserted (say, of another journal): none.
         let other = mock_prove(b"another journal");
-        assert_eq!(replaced.answered_on(Some(other.clone())), None);
-        let intact = asserted(&proof, true);
-        assert_eq!(intact.answered_on(Some(other)), Some(proof.clone()));
-        assert_eq!(intact.answered_on(None), Some(proof));
+        assert_eq!(on_chain.answered_on(Some(other)), None);
+    }
+
+    #[test]
+    fn the_whole_proof_is_the_chains_pi1_and_the_hubs_pi2_and_pi3() {
+        let proof = mock_prove(b"journal");
+        let on_chain = asserted(&proof);
+        let (pi2, pi3) = pi23_to_bytes(&proof);
+        assert_eq!(on_chain.proof(&pi2, &pi3), Some(proof.clone()));
+        // Of another proof: no point mismatch, but another proof, which
+        // does not verify.
+        let (pi2, pi3) = pi23_to_bytes(&mock_prove(b"another journal"));
+        let mixed = on_chain.proof(&pi2, &pi3).unwrap();
+        assert!(!lichen_babe::statement::Kind::Mock.verify(b"journal", &mixed));
+        // None handed over: no proof.
+        assert_eq!(on_chain.proof(&[], &[]), None);
     }
 }

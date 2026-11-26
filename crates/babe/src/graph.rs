@@ -7,7 +7,8 @@
 //! └─ front links (the L2's: request, and whatever its exit adds), each
 //!     │          output with its terminal (a timeout paying the user,
 //!     │          a correction's payout, ...)
-//!     └─ assert (the hub: π1 under its Lamport key, π2 and π3)
+//!     └─ assert (the hub: π1 under its Lamport key; π2 and π3 it hands
+//!         │      over off chain)
 //!         ├─ success (after Δ2)            → the front's choice
 //!         └─ challenge_assert (the user: the reveal)
 //!             ├─ wrongly_challenged_k      → the front's choice, the hub by
@@ -171,9 +172,6 @@ fn terminal_leaf(ctx: &ContractCtx, name: &str, window: u16) -> Leaf {
     ok_leaf(name, b, tl)
 }
 
-/// `assert`'s arguments: the preimages, π2, π3.
-pub type Asserted<'a> = (&'a [Vec<u8>], &'a [u8], &'a [u8]);
-
 /// A contract's graph: the L2's front, then the tail.
 pub struct Graph {
     pub front: Box<dyn Front>,
@@ -209,17 +207,15 @@ impl Graph {
         let first = self.front.links()?.remove(0);
         self.core().tree(first.leaf)
     }
-    /// `assert`'s leaf: π1's digits under the hub's Lamport key, π2 and π3
-    /// beside them, so that the user can check the whole proof from the
-    /// chain. Only π1 is signed: whoever relays or mines `assert` can
-    /// replace π2 and π3, its txid the same. Then the proof on chain no
-    /// longer verifies, and she challenges a true assertion: the hub
-    /// answers on the proof it made, not the chain's
-    /// (`lichen_proto::setup::Asserted::answered_on`), and she loses only
-    /// her challenge's fee.
+    /// `assert`'s leaf: π1's digits under the hub's Lamport key, and
+    /// nothing else. π2 and π3 the hub hands the user off chain: unsigned
+    /// beside π1, whoever relayed or mined `assert` could replace them, its
+    /// txid the same, and so have her challenge a true assertion; nor does
+    /// the chain have to carry what a hub withholding them could as well
+    /// post false. She challenges an assertion she has no valid proof of.
     fn assert_leaf(&self) -> Leaf {
         let (b, tl) = signed(&self.ctx(), after(POST_CSV));
-        ok_leaf("assert", self.tail.lamport.verify(b).push_opcode(OP_2DROP), tl)
+        ok_leaf("assert", self.tail.lamport.verify(b), tl)
     }
     /// `assert`'s output: the user's `challenge_assert`, the reveal; or,
     /// after `Δ2`, `success`.
@@ -261,7 +257,7 @@ impl Graph {
             let tree = TapTree::new(vec![next, terminal_leaf(&ctx, l.terminal, l.window)])?;
             out.push((l.name.to_string(), l.poster, l.shape.clone(), l.extra.clone(), tree, l.terminal.to_string(), l.pays));
         }
-        let assert_shape = vec![vec![0u8; 20]; DIGITS].into_iter().chain([vec![0u8; 64], vec![0u8; 32]]).collect();
+        let assert_shape = vec![vec![0u8; 20]; DIGITS];
         out.push(("assert".into(), Role::Hub, assert_shape, vec![], self.asserted()?, "success".into(), self.front.success()));
         let challenge_shape = (0..DIGITS).flat_map(|_| [vec![0u8; 20], vec![0u8; 64]]).collect();
         out.push(("challenge_assert".into(), Role::User, challenge_shape, vec![], self.challenged()?, "failure".into(), Payout::User));
@@ -330,14 +326,14 @@ impl Graph {
 
     // ----- the tail's witnesses, below both signatures -----
 
-    /// `assert`'s: π1's digits, Lamport-signed, then π2 and π3.
-    pub fn assert_wire(preimages: &[Preimage], pi2: &[u8], pi3: &[u8]) -> Vec<Vec<u8>> {
-        [pi3.to_vec(), pi2.to_vec()].into_iter().chain(preimages.iter().rev().map(|p| p.to_vec())).collect()
+    /// `assert`'s: π1's digits, Lamport-signed.
+    pub fn assert_wire(preimages: &[Preimage]) -> Vec<Vec<u8>> {
+        preimages.iter().rev().map(|p| p.to_vec()).collect()
     }
     /// Read `assert`'s arguments (consumption order, below both
-    /// signatures): the preimages, π2, π3.
-    pub fn read_assert(args: &[Vec<u8>]) -> Option<Asserted<'_>> {
-        (args.len() == DIGITS + 2).then(|| (&args[..DIGITS], &args[DIGITS][..], &args[DIGITS + 1][..]))
+    /// signatures): π1's preimages.
+    pub fn read_assert(args: &[Vec<u8>]) -> Option<&[Vec<u8>]> {
+        (args.len() == DIGITS).then_some(args)
     }
     /// `challenge_assert`'s: the reveal ([`crate::reveal::reveal_args`]).
     pub fn challenge_wire(args: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
@@ -357,4 +353,21 @@ pub fn link_args(tx: &Transaction) -> Vec<Vec<u8>> {
 /// A link's txid in a pre-signed set.
 pub fn txid_in(set: &[Presign], name: &str) -> Result<Txid> {
     Ok(set.iter().find(|p| p.name == name).with_context(|| format!("no {name}"))?.tx.compute_txid())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn assert_carries_pi1s_preimages_alone() {
+        let preimages: Vec<Preimage> = (0..DIGITS).map(|i| [i as u8; 20]).collect();
+        let wire = Graph::assert_wire(&preimages);
+        assert_eq!(wire.len(), DIGITS);
+        let read = Graph::read_assert(&wire).unwrap();
+        assert_eq!(read.iter().rev().map(|p| p[..].to_vec()).collect::<Vec<_>>(), preimages.iter().map(|p| p.to_vec()).collect::<Vec<_>>());
+        // π2 and π3 beside them, as `assert` carried them before: refused.
+        let with_pair: Vec<Vec<u8>> = [vec![0u8; 32], vec![0u8; 64]].into_iter().chain(wire).collect();
+        assert!(Graph::read_assert(&with_pair).is_none());
+    }
 }

@@ -6,7 +6,9 @@
 //!
 //! HTTP (JSON): `GET /info`, the opening's cut-and-choose (`POST
 //! /hp/setup`, `POST /hp/commit`, and `POST /hp/instance/<cid>/<i>`, an
-//! instance's bytes: `lichen_proto::hp`), `POST /open` ([`OpenRequest`] to
+//! instance's bytes: `lichen_proto::hp`), `POST /hp/proof` (a dispute's
+//! [`lichen_proto::ProofRequest`] to [`lichen_proto::ProofParts`]: π2 and
+//! π3 of the proof the hub asserted), `POST /open` ([`OpenRequest`] to
 //! [`OpenOffer`]), `POST /accept` ([`Accept`] to [`Opened`]), `POST
 //! /withdraw/nonce` ([`FoldNonceRequest`] to [`FoldNonce`]: the hub's
 //! MuSig2 nonce for the fold) then `POST /withdraw` ([`WithdrawRequest`]
@@ -398,6 +400,7 @@ fn route<L: HubL2>(inner: &Inner<L>, method: &Method, url: &str, body: &str) -> 
         (Method::Post, "/deposit") => serde_json::to_string(&inner.deposit(serde_json::from_str(body)?)?)?,
         (Method::Post, "/hp/setup") => serde_json::to_string(&inner.hp_setup(serde_json::from_str(body)?)?)?,
         (Method::Post, "/hp/commit") => serde_json::to_string(&inner.hp_commit(serde_json::from_str(body)?)?)?,
+        (Method::Post, "/hp/proof") => serde_json::to_string(&inner.hp_proof_parts(serde_json::from_str(body)?)?)?,
         (Method::Post, "/open") => serde_json::to_string(&inner.open(serde_json::from_str(body)?)?)?,
         (Method::Post, "/accept") => serde_json::to_string(&inner.accept(serde_json::from_str(body)?)?)?,
         (Method::Post, "/withdraw/nonce") => serde_json::to_string(&inner.fold_nonce(serde_json::from_str(body)?)?)?,

@@ -223,15 +223,14 @@ impl Disputed {
         self.graph.front_names()?.pop().context("an empty front")
     }
     /// What `assert` put on chain: π1's digits (read under the hub's
-    /// Lamport key), their preimages, and the proof, if its points are
-    /// points.
+    /// Lamport key) and their preimages.
     pub fn asserted(&self, assert: &bitcoin::Transaction) -> Result<crate::setup::Asserted> {
         let args = crate::setup::link_args(assert);
-        let (signed, pi2, pi3) = Graph::read_assert(&args).context("assert's arguments")?;
+        let signed = Graph::read_assert(&args).context("assert's arguments")?;
         let lamport = &self.graph.tail.lamport;
         let preimages: Vec<lichen_babe::reveal::Preimage> = signed.iter().map(|a| a[..].try_into().context("a preimage's length")).collect::<Result<_>>()?;
         let digits: Vec<u8> = preimages.iter().enumerate().map(|(d, p)| lamport.read(d, p).context("a preimage of no digit")).collect::<Result<_>>()?;
         let bits: Vec<bool> = digits.iter().flat_map(|v| [v & 1 == 1, v & 2 == 2]).collect();
-        Ok(crate::setup::Asserted { proof: lichen_babe::statement::proof_from_chain(&bits, pi2, pi3), digits, bits, preimages })
+        Ok(crate::setup::Asserted { digits, bits, preimages })
     }
 }

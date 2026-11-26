@@ -210,6 +210,8 @@ pub fn wait_link(chain: &Chain, txid: &Txid, ours: &OutPoint, deadline: u32) -> 
 /// A dispute's options besides its signer and store.
 #[derive(Clone, Default)]
 pub struct Options {
+    /// The hub's URL: it hands over π2 and π3 of its assertion.
+    pub hub: String,
     /// Progress, one line a step.
     pub progress: Option<Arc<dyn Fn(String) + Send + Sync>>,
     /// For tests: stop after posting `request` (1); a resume picks it up.

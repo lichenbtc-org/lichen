@@ -50,7 +50,8 @@ contract output (key path: the fold; leaves: default, and the front's
 └─ front links (the L2's: request, and whatever its exit adds), each
     │          output with its terminal (a timeout paying the user,
     │          a correction's payout, ...)
-    └─ assert (the hub: π1 under its Lamport key, π2 and π3)
+    └─ assert (the hub: π1 under its Lamport key; π2 and π3 it hands
+        │      over off chain)
         ├─ success (after Δ2)            → the front's choice
         └─ challenge_assert (the user: the reveal)
             ├─ wrongly_challenged_k      → the front's choice, the hub by

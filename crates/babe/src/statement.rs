@@ -96,7 +96,7 @@ pub fn proof_from_bytes(b: &[u8]) -> Option<Proof<Bn254>> {
     Proof::deserialize_compressed(b).ok()
 }
 
-/// π2 and π3 as `assert` carries them (compressed; neither is signed).
+/// π2 and π3 as the hub hands them over, off chain (compressed).
 pub fn pi23_to_bytes(p: &Proof<Bn254>) -> (Vec<u8>, Vec<u8>) {
     let (mut b, mut c) = (Vec::new(), Vec::new());
     p.b.serialize_compressed(&mut b).expect("serialize");
@@ -119,8 +119,9 @@ pub fn pi1_from_bits(bits: &[bool]) -> Option<G1Affine> {
     p.is_on_curve().then_some(p)
 }
 
-/// The whole proof from what `assert` puts on chain: π1's bits, π2, π3.
-pub fn proof_from_chain(bits: &[bool], pi2: &[u8], pi3: &[u8]) -> Option<Proof<Bn254>> {
+/// The whole proof: π1's bits, as `assert` signs them on chain, and π2
+/// and π3 as the hub hands them over ([`pi23_to_bytes`]).
+pub fn proof_of(bits: &[bool], pi2: &[u8], pi3: &[u8]) -> Option<Proof<Bn254>> {
     Some(Proof {
         a: pi1_from_bits(bits)?,
         b: CanonicalDeserialize::deserialize_compressed(pi2).ok()?,
@@ -142,7 +143,7 @@ mod tests {
         assert_eq!(proof_from_bytes(&proof_to_bytes(&p)), Some(p.clone()));
         assert_eq!(proof_to_bytes(&p).len(), 128);
         let (b, c) = pi23_to_bytes(&p);
-        assert_eq!(proof_from_chain(&input(&p.a), &b, &c), Some(p));
+        assert_eq!(proof_of(&input(&p.a), &b, &c), Some(p));
         // bits that are no point
         let mut bits = input(&mock_prove(&j).a);
         bits[3] ^= true;
