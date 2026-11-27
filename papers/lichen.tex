@@ -723,15 +723,9 @@ transaction & posted by & carries, and pays \\
 
 The concrete choices, beyond BABE's paper:
 \begin{itemize}[leftmargin=1.5em]
-\item \emph{Only $\pi_1$ on chain.} \tx{assert} carries the signed
-  $\pi_1$ alone; the hub hands Alice $\pi_2$ and $\pi_3$ off chain, so
-  that she checks the proof natively (about 1.5~ms) and challenges only
-  an invalid one; a valid one she concedes, and \tx{success} follows.
-  Unsigned beside $\pi_1$, they could be replaced by whoever relays or
-  mines \tx{assert}, its txid the same, to have her challenge a true
-  assertion; and a hub that withholds them could as well post false
-  ones. Without a valid proof she challenges, which a valid assertion
-  answers.
+\item \emph{Conceding.} The hub hands Alice $\pi_2$ and $\pi_3$ off
+  chain; she checks the proof natively and concedes a valid one, where
+  BABE's verifier always challenges.
 \item \emph{Two bits a digit.} The hub signs $\pi_1$'s 508 bits as 254
   two-bit digits, revealing one of four preimages per digit: Lamport
   over a larger alphabet, needing no checksum. Bit by bit,
