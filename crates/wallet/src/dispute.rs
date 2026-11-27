@@ -95,7 +95,7 @@ impl<L: WalletL2> Wallet<L> {
         self.ensure_open(chain, k)?;
         let held = self.contracts[k].clone();
         let signer = WalletSigner { secrets: self.secrets(&held.nonce), network: held.record.network };
-        let opts = Options { progress: self.progress.clone(), pause_after: self.pause_after, unchecked_claims: self.unchecked_claims, contest: self.contest };
+        let opts = Options { hub: self.hub.clone(), progress: self.progress.clone(), pause_after: self.pause_after, unchecked_claims: self.unchecked_claims, contest: self.contest };
         let layer = self.l2.clone();
         let outcome = Engine { signer: &signer, store: &mut HeldStore { w: self, k }, opts }.run(chain, &held.record, statement, &layer, b)?;
         if outcome.payout().is_none() {

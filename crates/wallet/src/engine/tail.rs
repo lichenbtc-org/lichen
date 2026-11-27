@@ -20,6 +20,14 @@ use lichen_proto::Statement;
 use super::{confirmed_at, revealed, wait_link, Engine, Next, Outcome};
 
 impl Engine<'_> {
+    /// π2 and π3 of the proof the hub asserted (`POST /hp/proof`), which
+    /// `assert` does not carry. Asked once: a hub that doesn't answer has
+    /// its assertion challenged, which it answers if its proof is valid.
+    fn proof_parts(&self, cid: u32) -> Result<lichen_proto::ProofParts> {
+        let body = serde_json::to_string(&lichen_proto::ProofRequest { cid })?;
+        crate::hub_call(&format!("{}/hp/proof", self.opts.hub), Some(body), true)
+    }
+
     /// The tail, the front's last link confirmed at `at`: if the hub's
     /// proof stands, `success` pays `b_corr` (or, with none, the hub).
     pub(crate) fn tail(&mut self, chain: &Chain, d: &Disputed, statement: &Statement, journal: &[u8], at: u32, b_corr: Option<u32>) -> Result<Outcome> {
@@ -36,10 +44,16 @@ impl Engine<'_> {
             }
             Next::Taken => return self.lost(d.txid(last)),
         };
-        // its proof, checked natively
+        // its proof, checked natively: π1 the chain's, π2 and π3 the hub's
         let asserted = d.asserted(&assert)?;
         let kind = statement.hp_kind()?;
-        let valid = asserted.proof.as_ref().is_some_and(|p| kind.verify(journal, p));
+        let valid = match self.proof_parts(d.record.cid()) {
+            Ok(parts) => asserted.proof(&parts.pi2, &parts.pi3).is_some_and(|p| kind.verify(journal, &p)),
+            Err(e) => {
+                self.step(format!("the hub didn't hand over the rest of its proof: {e:#}"));
+                false
+            }
+        };
         let asserted_at = confirmed_at(chain, &d.txid("assert"))?.context("the assertion")?;
         if valid && !self.opts.unchecked_claims {
             return match b_corr {
