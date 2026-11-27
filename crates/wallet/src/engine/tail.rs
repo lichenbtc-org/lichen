@@ -21,11 +21,36 @@ use super::{confirmed_at, revealed, wait_link, Engine, Next, Outcome};
 
 impl Engine<'_> {
     /// π2 and π3 of the proof the hub asserted (`POST /hp/proof`), which
-    /// `assert` does not carry. Asked once: a hub that doesn't answer has
-    /// its assertion challenged, which it answers if its proof is valid.
-    fn proof_parts(&self, cid: u32) -> Result<lichen_proto::ProofParts> {
+    /// `assert` does not carry: asked until block `until`, since a hub may
+    /// be restarting or out of reach when its assertion confirms, and a
+    /// challenge it answers costs her more than the wait. A refusal or no
+    /// answer is asked again, less often each time; parts handed over are
+    /// final, whether or not they prove (a hub that hands over false ones
+    /// gains nothing by being asked again). None by `until`.
+    fn proof_parts(&self, chain: &Chain, cid: u32, until: u32) -> Result<Option<lichen_proto::ProofParts>> {
         let body = serde_json::to_string(&lichen_proto::ProofRequest { cid })?;
-        crate::hub_call(&format!("{}/hp/proof", self.opts.hub), Some(body), true)
+        let url = format!("{}/hp/proof", self.opts.hub);
+        let mut stall = Stall::new(chain.height()?, chain.network);
+        let mut wait = Duration::from_secs(1);
+        let mut said = false;
+        loop {
+            let e = match crate::hub_call(&url, Some(body.clone()), true) {
+                Ok(parts) => return Ok(Some(parts)),
+                Err(e) => e,
+            };
+            let h = chain.height()?;
+            if h >= until {
+                self.step(format!("the hub didn't hand over the rest of its proof by block {until}: {e:#}"));
+                return Ok(None);
+            }
+            if !said {
+                self.step(format!("the hub didn't hand over the rest of its proof ({e:#}): asking again until block {until}"));
+                said = true;
+            }
+            ensure!(!stall.stalled(h), "the chain stalled");
+            std::thread::sleep(wait);
+            wait = (wait * 2).min(Duration::from_secs(60));
+        }
     }
 
     /// The tail, the front's last link confirmed at `at`: if the hub's
@@ -47,14 +72,12 @@ impl Engine<'_> {
         // its proof, checked natively: π1 the chain's, π2 and π3 the hub's
         let asserted = d.asserted(&assert)?;
         let kind = statement.hp_kind()?;
-        let valid = match self.proof_parts(d.record.cid()) {
-            Ok(parts) => asserted.proof(&parts.pi2, &parts.pi3).is_some_and(|p| kind.verify(journal, &p)),
-            Err(e) => {
-                self.step(format!("the hub didn't hand over the rest of its proof: {e:#}"));
-                false
-            }
-        };
         let asserted_at = confirmed_at(chain, &d.txid("assert"))?.context("the assertion")?;
+        // asked for during the first half of Δ2, the second left for her
+        // challenge to confirm; once, if she challenges whatever it shows
+        let until = if self.opts.unchecked_claims { 0 } else { asserted_at + u32::from(w.delta2) / 2 };
+        let parts = self.proof_parts(chain, d.record.cid(), until)?;
+        let valid = parts.is_some_and(|p| asserted.proof(&p.pi2, &p.pi3).is_some_and(|p| kind.verify(journal, &p)));
         if valid && !self.opts.unchecked_claims {
             return match b_corr {
                 Some(b_corr) => {
