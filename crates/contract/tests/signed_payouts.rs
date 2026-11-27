@@ -2,9 +2,10 @@
 //! where the hub proves what Alice is owed) on regtest, under mainnet's
 //! relay policy: confirmed, then every output `Core::owned` gives each
 //! party spent by it, the hub's only after `delta`; Alice taking a hub
-//! bit and the hub's reserve by `equiv_b` when it signed two values. And,
-//! without a node: the Alice-signed builders unchanged under their old
-//! names, and the hub's reserve below dust folding into the rest.
+//! bit and the hub's reserve by `equiv_b` when it signed two values; the
+//! same with a rest output, the contract of any size. And, without a node:
+//! the Alice-signed builders unchanged under their old names, and the
+//! hub's reserve below dust folding into the rest.
 
 use bitcoin::script::Builder;
 use bitcoin::{absolute, Amount, OutPoint, ScriptBuf, Transaction, TxOut};
@@ -15,6 +16,7 @@ use lichen_btc::sighash::sign_tapscript;
 use lichen_btc::taptree::{Leaf, TapTree};
 use lichen_btc::tx::{build_spend, build_tx, Timelock};
 use lichen_btc::witness::tapscript_witness;
+use lichen_contract::payout::Word;
 use lichen_contract::*;
 use lichen_wots::{WotsParams, WotsSecret, WotsSig};
 
@@ -42,6 +44,7 @@ fn fixture() -> Fixture {
         t_close: 100_000,
         reserve_alice: Amount::from_sat(20_000),
         reserve_hub: Amount::from_sat(100_000),
+        rest: 0,
     };
     let pubs = [alice.public(), hub.public()];
     Fixture { alice, hub, terms, params: ContractParams::regtest(Amount::ZERO), pubs, hub_b: WotsSecret::from_entropy(WotsParams::for_bytes(4), [5; 32]) }
@@ -116,10 +119,10 @@ fn a_payout_the_hub_signed_on_regtest() {
 
     // Each party sweeps what it owns: hers at once, the hub's after delta.
     let payout = pay(&rt, outs.clone());
-    let hers = core.owned(&payout, &key, Role::Hub, B_REDUCED, Role::User).unwrap();
+    let hers = core.owned(&payout, &key, Role::Hub, Word::new(B_REDUCED), Role::User).unwrap();
     assert_eq!(hers.iter().map(|o| o.leaf.as_str()).collect::<Vec<_>>(), ["alice_bit_2", "alice_bit_3", "alice_bit_5", "alice_bit_8"]);
     rt.send_and_confirm(&sweep(&hers, &f.alice.payment, &signed)).unwrap();
-    let its = core.owned(&payout, &key, Role::Hub, B_REDUCED, Role::Hub).unwrap();
+    let its = core.owned(&payout, &key, Role::Hub, Word::new(B_REDUCED), Role::Hub).unwrap();
     assert_eq!(its.len(), 7, "six clear bits and its reserve");
     assert_eq!(its.last().unwrap().leaf, "hub_reserve");
     let swept = sweep(&its, &f.hub.payment, &signed);
@@ -142,6 +145,61 @@ fn a_payout_the_hub_signed_on_regtest() {
     let again: Vec<Vec<u8>> = signed.iter().chain(&signed).cloned().collect();
     assert!(rt.test_accept(&spend(&payout, 7, &bit_out_tree(&f, 7), "equiv_b_7", again, &f.alice.payment)).is_err());
     assert!(rt.test_accept(&spend(&payout, 7, &bit_out_tree(&f, 7), "equiv_b_7", equiv, &f.hub.payment)).is_err());
+}
+
+/// A contract of 1 500 units (1 023 in ten bits, and a rest of 477): the
+/// hub signs 1 200 as the word selecting the rest and 723 in the bits,
+/// each party sweeps its own, the rest output among them, and the hub's
+/// reserve after it; she takes the rest by `equiv_b` when the hub signed
+/// two values.
+#[test]
+fn a_payout_with_a_rest_on_regtest() {
+    let rt = Regtest::start_standard().unwrap();
+    let mut f = fixture();
+    f.terms.rest = 477;
+    let (core, ctx, t) = (f.core(), f.core().ctx(), f.terms);
+    assert_eq!(core.value(), Amount::from_sat(1_500_000) + t.reserves());
+    let key = f.hub_b.public();
+    let outs = core.pay_reduced(&key, core.value()).unwrap();
+    // the ten bits, the rest, her reserve, the hub's
+    assert_eq!(outs.len(), t.bits as usize + 3);
+    assert_eq!(outs[t.bits as usize].value, Amount::from_sat(477_000));
+    assert_eq!(outs[t.bits as usize + 1], TxOut { value: t.reserve_alice, script_pubkey: f.pubs[0].payout_spk.clone() });
+    let word = t.payout().word(1_200).unwrap();
+    assert_eq!(word, Word::new((1 << 10) | 723));
+    let signed = wire(&f.sign(word.to_u32()));
+
+    let payout = pay(&rt, outs.clone());
+    let hers = core.owned(&payout, &key, Role::Hub, word, Role::User).unwrap();
+    assert_eq!(hers.iter().map(|o| o.leaf.as_str()).collect::<Vec<_>>(), ["alice_bit_0", "alice_bit_1", "alice_bit_4", "alice_bit_6", "alice_bit_7", "alice_bit_9", "alice_bit_10"]);
+    assert_eq!(hers.iter().map(|o| o.out.value).sum::<Amount>(), Amount::from_sat(1_200_000));
+    rt.send_and_confirm(&sweep(&hers, &f.alice.payment, &signed)).unwrap();
+    let its = core.owned(&payout, &key, Role::Hub, word, Role::Hub).unwrap();
+    assert_eq!(its.iter().map(|o| o.leaf.as_str()).collect::<Vec<_>>(), ["hub_bit_2", "hub_bit_3", "hub_bit_5", "hub_bit_8", "hub_reserve"]);
+    assert_eq!(its.last().unwrap().op.vout, t.bits + 2);
+    rt.mine(u64::from(f.params.delta)).unwrap();
+    rt.send_and_confirm(&sweep(&its, &f.hub.payment, &signed)).unwrap();
+
+    // two values signed: she takes the rest output and the hub's reserve
+    let payout = pay(&rt, outs);
+    let equiv: Vec<Vec<u8>> = wire(&f.sign(word.to_u32() - 1)).into_iter().chain(signed).collect();
+    let rest = bit_tree_signed(&ctx, t.bits, &key, Role::Hub).unwrap();
+    rt.send_and_confirm(&spend(&payout, t.bits, &rest, &format!("equiv_b_{}", t.bits), equiv.clone(), &f.alice.payment)).unwrap();
+    let reserve = reserve_tree_signed(&ctx, &t, &key, Role::Hub).unwrap();
+    rt.send_and_confirm(&spend(&payout, t.bits + 2, &reserve, &format!("equiv_b_{}", t.bits + 1), equiv, &f.alice.payment)).unwrap();
+}
+
+/// A rest below `2^low_bits`, or not below `2^K`, is no contract's.
+#[test]
+fn a_rest_out_of_range_is_refused() {
+    let mut f = fixture();
+    f.terms.rest = 1 << f.terms.bits;
+    assert!(f.core().pay_reduced(&f.hub_b.public(), f.core().value()).is_err());
+    f.terms.rest = 3;
+    f.terms.low_bits = 2;
+    assert!(f.core().pay_reduced(&f.hub_b.public(), f.core().value()).is_err());
+    f.terms.rest = 4;
+    assert!(f.core().pay_reduced(&f.hub_b.public(), f.core().value()).is_ok());
 }
 
 fn bit_out_tree(f: &Fixture, i: u32) -> TapTree {

@@ -48,9 +48,8 @@ use serde::{Deserialize, Serialize};
 
 /// Each party's share of the funding transaction's fee.
 pub const FEE_SHARE: Amount = Amount::from_sat(1_000);
-/// The least a bit of the dispute's payout is worth (sats): a smaller
-/// output would be dust. A contract's unit is from this to about twice it
-/// ([`scale`]).
+/// A contract's unit (sats): the least a bit of the dispute's payout is
+/// worth, a smaller output being dust. Every contract's ([`scale`]).
 pub const MIN_UNIT: u64 = 512;
 /// The base's version (lichen's crates): an L2 reports its own in [`Info`].
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -620,18 +619,35 @@ pub fn liquidity_fee(liquidity: u64, fee_ppm: u64) -> u64 {
     (u128::from(liquidity) * u128::from(fee_ppm) / 1_000_000) as u64
 }
 
-/// A cap's scale: the largest `K` with `MIN_UNIT (2^K - 1)` at most `cap`
-/// (at most 32: `b` is a 32-bit word), and the unit `u = ceil(cap / (2^K -
-/// 1))`. So `V_max = u (2^K - 1)` is the cap, or more by under `2^K` sats
-/// (about 0.2%), and every bit of the payout is an output of at least
-/// `MIN_UNIT`.
-pub fn scale(cap: u64) -> Result<(u32, u64)> {
-    ensure!(cap >= MIN_UNIT, "a cap of {cap} sats, under {MIN_UNIT}");
-    let mut k = 1u32;
-    while k < 32 && MIN_UNIT.saturating_mul((1u64 << (k + 1)) - 1) <= cap {
-        k += 1;
+/// A cap's scale: in units of [`MIN_UNIT`], the cap rounded up, `K` the
+/// largest with `2^K - 1` units at most that, and the rest `R` of them
+/// one output more ([`Terms::rest`]). So `V_max = u (2^K - 1 + R)` is the
+/// cap, or more by under a unit, whatever the cap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Scale {
+    pub bits: u32,
+    /// `u`, [`MIN_UNIT`].
+    pub unit: u64,
+    pub rest: u32,
+}
+
+impl Scale {
+    /// `V_max`, in sats.
+    pub fn v_max(&self) -> u64 {
+        self.unit * ((1u64 << self.bits) - 1 + u64::from(self.rest))
     }
-    Ok((k, cap.div_ceil((1u64 << k) - 1)))
+}
+
+/// The scale of a cap of `cap` sats ([`Scale`]): at least a unit, and at
+/// most `2^32 - 1` units (the payout's word).
+pub fn scale(cap: u64) -> Result<Scale> {
+    ensure!(cap >= MIN_UNIT, "a cap of {cap} sats, under {MIN_UNIT}");
+    let units = cap.div_ceil(MIN_UNIT);
+    ensure!(units <= u64::from(u32::MAX), "a cap of {cap} sats, above {} units", u32::MAX);
+    // the largest K with 2^K - 1 <= units: R = units - (2^K - 1) < 2^K
+    let bits = (units + 1).ilog2();
+    let rest = (units - ((1u64 << bits) - 1)) as u32;
+    Ok(Scale { bits, unit: MIN_UNIT, rest })
 }
 
 /// The terms of a contract opened from `req` with the hub's choices: Alice
@@ -643,13 +659,14 @@ pub fn terms(cid: u32, req: &OpenRequest, t_close: u32, reserve_hub: u64) -> Res
     ensure!(req.reserve <= most && reserve_hub <= most, "a reserve above 21 million bitcoin");
     ensure!(req.deposit <= most && req.liquidity <= most, "a deposit or liquidity above 21 million bitcoin");
     ensure!(req.fee < req.deposit, "a deposit of {} doesn't cover the fee of {}", req.deposit, req.fee);
-    let (bits, unit) = scale(req.deposit - req.fee + req.liquidity)?;
-    let v_max = unit * ((1u64 << bits) - 1);
+    let scaled = scale(req.deposit - req.fee + req.liquidity)?;
+    let v_max = scaled.v_max();
     ensure!(req.deposit <= v_max, "a deposit of {} with a cap of {v_max}", req.deposit);
     Ok(Terms {
         id: cid,
-        unit: Amount::from_sat(unit),
-        bits,
+        unit: Amount::from_sat(scaled.unit),
+        bits: scaled.bits,
+        rest: scaled.rest,
         low_bits: 0,
         deposit: u32::try_from(req.deposit).context("the deposit")?,
         t_close,
@@ -726,19 +743,23 @@ pub fn terminal_fee(tx: &Transaction, net: Net) -> Amount {
 mod tests {
     use super::*;
 
-    /// A cap's scale: `V_max` the cap or a little more, every bit's output
-    /// at least `MIN_UNIT`; the terms of a request, its fee out of the
-    /// minted deposit and in the cap.
+    /// A cap's scale: `V_max` the cap or less than a unit more, of a unit
+    /// of `MIN_UNIT` whatever the cap, its rest below `2^K`; the terms of a
+    /// request, its fee out of the minted deposit and in the cap.
     #[test]
     fn the_cap_scaled() {
-        assert_eq!(scale(1_000_000).unwrap(), (10, 978));
-        assert_eq!(scale(400_000 + 1_000_000).unwrap().1, 684);
-        assert_eq!(scale(MIN_UNIT).unwrap(), (1, MIN_UNIT));
+        // 1 954 units: 1 023 in ten bits, and 931
+        assert_eq!(scale(1_000_000).unwrap(), Scale { bits: 10, unit: MIN_UNIT, rest: 931 });
+        assert_eq!(scale(1_000_000).unwrap().v_max(), 1_000_448);
+        // a cap of 2^K - 1 units, no rest
+        assert_eq!(scale(512 * 1_023).unwrap(), Scale { bits: 10, unit: MIN_UNIT, rest: 0 });
+        assert_eq!(scale(MIN_UNIT).unwrap(), Scale { bits: 1, unit: MIN_UNIT, rest: 0 });
         assert!(scale(MIN_UNIT - 1).is_err());
-        for cap in [512, 1_000, 1_535, 1_536, 99_999, 1_000_000, 16_777_215, 2_100_000_000_000] {
-            let (k, u) = scale(cap).unwrap();
-            let v_max = u * ((1u64 << k) - 1);
-            assert!(v_max >= cap && v_max - cap < 1 << k && u >= MIN_UNIT && k <= 32, "{cap}: K {k}, u {u}");
+        assert!(scale(MIN_UNIT * (u64::from(u32::MAX) + 1)).is_err());
+        for cap in [512, 1_000, 1_535, 1_536, 99_999, 1_000_000, 16_777_215, 2_100_000_000_000, MIN_UNIT * u64::from(u32::MAX)] {
+            let s = scale(cap).unwrap();
+            assert!(s.v_max() >= cap && s.v_max() - cap < MIN_UNIT && u64::from(s.rest) < 1 << s.bits && s.bits <= 32, "{cap}: {s:?}");
+            assert!(s.rest == 0 || s.bits <= 31, "{cap}: {s:?}");
         }
         let req = |deposit, liquidity, fee| OpenRequest {
             alice: lichen_contract::PartyKeys::from_seed(lichen_contract::Role::User, lichen_btc::keys::Seed::from_label("test/alice")).public(),
@@ -753,10 +774,11 @@ mod tests {
             fee_spk: bitcoin::ScriptBuf::new(),
         };
         let t = terms(1000, &req(100_000, 1_000_000, liquidity_fee(1_000_000, 10_000)), 500, 30_000).unwrap();
-        assert_eq!((t.bits, t.unit, t.low_bits, t.deposit), (11, Amount::from_sat(533), 0, 100_000));
-        assert_eq!(t.v_max(), Amount::from_sat(1_091_051), "the cap 1,090,000, scaled");
+        // 2 129 units: 2 047 in eleven bits, and 82
+        assert_eq!((t.bits, t.rest, t.unit, t.low_bits, t.deposit), (11, 82, Amount::from_sat(512), 0, 100_000));
+        assert_eq!(t.v_max(), Amount::from_sat(1_090_048), "the cap 1,090,000, scaled");
         // the hub puts in the liquidity, less the fee, and the overshoot
-        assert_eq!(contributions(&t).1, Amount::from_sat(1_091_051 - 100_000 + 30_000));
+        assert_eq!(contributions(&t).1, Amount::from_sat(1_090_048 - 100_000 + 30_000));
         assert!(terms(1000, &req(10_000, 1_000_000, 10_000), 500, 30_000).is_err(), "a fee the deposit doesn't cover");
     }
 

@@ -1081,6 +1081,7 @@ dependencies = [
  "anyhow",
  "bitcoin",
  "lichen-btc",
+ "lichen-payout",
  "lichen-wots",
  "serde",
 ]
@@ -1106,6 +1107,10 @@ dependencies = [
  "serde_json",
  "tiny_http",
 ]
+
+[[package]]
+name = "lichen-payout"
+version = "0.4.5"
 
 [[package]]
 name = "lichen-proto"

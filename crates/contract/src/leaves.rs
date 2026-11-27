@@ -2,6 +2,10 @@
 //! reserve leaves), and the outputs that pay a withdrawal `b` on the
 //! dispute path or end the contract by default at `T_close`.
 //!
+//! The payout's outputs are `2^i` units for `i < K` and, for a contract
+//! of any other size than `2^K - 1` units, one more of `R` units: a word's
+//! bit `i` gives output `i` to Alice, clear to the hub ([`Terms::word`]).
+//!
 //! The contract output's key path is both parties' MuSig2 key: the fold,
 //! the cooperative withdrawal, signed when it happens ([`crate::Fold`]).
 //! Its leaves are `default` and the dispute's `escalate` (BABE's
@@ -18,6 +22,7 @@ use lichen_btc::script::BuilderExt;
 use lichen_btc::taptree::{Leaf, TapTree};
 use lichen_btc::tx::Timelock;
 use crate::keys::{ContractCtx, Role};
+use lichen_payout::Payout;
 use lichen_wots::{Chain, WotsExt, WotsPublicOf};
 
 /// A contract's terms.
@@ -27,7 +32,7 @@ pub struct Terms {
     pub id: u32,
     /// The payout's granularity `u`.
     pub unit: Amount,
-    /// `K`: a withdrawal is `b < 2^K` units, so `V_max = (2^K - 1) u`.
+    /// `K`: the payout's binary outputs, of `2^i` units for `i < K`.
     pub bits: u32,
     /// On the dispute path, bits below this get no output (they would be
     /// dust): `b` is paid rounded down to a multiple of `2^low_bits` units,
@@ -42,14 +47,37 @@ pub struct Terms {
     /// outcome, forfeited to the other side by losing a dispute.
     pub reserve_alice: Amount,
     pub reserve_hub: Amount,
+    /// `R`, in units: the payout's one output beyond its binary ones, so
+    /// that `V_max = (2^K - 1 + R) u` is any size, not only `2^K - 1`
+    /// units. 0, none; else `2^low_bits <= R < 2^K` and `K <= 31`: below
+    /// `2^K` the binary outputs pay `0..=2^K - 1` and, with `R`'s,
+    /// `R..=V_max`, which meet. Bit `K` of the signed word selects it
+    /// ([`Payout::word`]).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rest: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 impl Terms {
-    pub fn v_max_units(&self) -> u32 {
-        (1 << self.bits) - 1
+    /// `V_max` in units: the binary outputs' `2^K - 1` and `R`.
+    pub fn v_max_units(&self) -> u64 {
+        self.payout().v_max()
     }
     pub fn v_max(&self) -> Amount {
-        self.unit * u64::from(self.v_max_units())
+        self.unit * self.v_max_units()
+    }
+    /// The payout's outputs, by which a signed word selects them and
+    /// counts ([`Payout`]): `K`, `low_bits` and `R`.
+    pub fn payout(&self) -> Payout {
+        Payout { bits: self.bits, low_bits: self.low_bits, rest: self.rest }
+    }
+    /// The index `equiv_b` takes on the reserve output: `K`, after the bit
+    /// outputs', or `K + 1` with `R`'s output at `K`.
+    fn reserve_index(&self) -> u32 {
+        self.bits + u32::from(self.rest > 0)
     }
     /// Both reserves: what the winner of a dispute takes on top of its
     /// share of `V_max`.
@@ -174,7 +202,8 @@ pub fn reserve_leaf_signed(ctx: &ContractCtx, signer: Role) -> Leaf {
 }
 
 /// The reserve output of a payout to Alice: both reserves, hers after
-/// `delta`, the hub's with `equiv_b` (index `K`, after the bit outputs').
+/// `delta`, the hub's with `equiv_b` (index `K`, after the bit outputs',
+/// or `K + 1` with `R`).
 /// [`reserve_tree_signed`] by Alice.
 pub fn reserve_tree<H: Chain>(ctx: &ContractCtx, t: &Terms, b_key: &WotsPublicOf<H>) -> Result<TapTree> {
     reserve_tree_signed(ctx, t, b_key, Role::User)
@@ -182,14 +211,15 @@ pub fn reserve_tree<H: Chain>(ctx: &ContractCtx, t: &Terms, b_key: &WotsPublicOf
 
 /// The reserve output of a payout of a value `signer` signed: the
 /// signer's after `delta`, the other party's with `equiv_b` (index `K`,
-/// after the bit outputs').
+/// after the bit outputs', or `K + 1` with `R`).
 pub fn reserve_tree_signed<H: Chain>(ctx: &ContractCtx, t: &Terms, b_key: &WotsPublicOf<H>, signer: Role) -> Result<TapTree> {
-    TapTree::new(vec![reserve_leaf_signed(ctx, signer), equiv_b_leaf_signed(ctx, t.bits, b_key, signer)])
+    TapTree::new(vec![reserve_leaf_signed(ctx, signer), equiv_b_leaf_signed(ctx, t.reserve_index(), b_key, signer)])
 }
 
 /// The outputs of every transaction that pays Alice's withdrawal (her
 /// proof, the hub's timeout): for each bit `i` from `low_bits` to `K - 1`,
-/// an output of `u 2^i`, Alice's iff bit `i` of her signed `b` is set; then
+/// an output of `u 2^i`, and with `R` one of `u R` for bit `K`, Alice's iff
+/// bit `i` of her signed word ([`Terms::word`]) is set; then
 /// both reserves, Alice's; the rest of `available` (less `fee`) to the
 /// hub.
 pub fn payout<H: Chain>(ctx: &ContractCtx, t: &Terms, b_key: &WotsPublicOf<H>, available: Amount, fee: Amount) -> Result<Vec<TxOut>> {
@@ -207,8 +237,8 @@ pub fn payout_less<H: Chain>(ctx: &ContractCtx, t: &Terms, b_key: &WotsPublicOf<
 /// The outputs paying the value `signer` signed under `b_key`, after a
 /// dispute whose links carried fee floors totalling `floors` out of the
 /// contract (they come from the hub's reserve): for each bit `i` from
-/// `low_bits` to `K - 1`, an output of `u 2^i`, Alice's iff bit `i` is set,
-/// then:
+/// `low_bits` to `K - 1`, an output of `u 2^i`, and with `R` one of `u R`
+/// for bit `K`, Alice's iff bit `i` is set, then:
 /// - Alice signed (her claim stood, [`payout_less`]): both reserves less
 ///   the floors, hers after `delta` (the hub, the loser, forfeits its
 ///   own; it still gets `V_max - b`);
@@ -225,10 +255,12 @@ pub fn payout_less<H: Chain>(ctx: &ContractCtx, t: &Terms, b_key: &WotsPublicOf<
 /// it, a signer that signed a second value can take the other's bits by
 /// its own leaves. Paying the hub's value, that duty is Alice's.
 pub fn payout_less_signed<H: Chain>(ctx: &ContractCtx, t: &Terms, b_key: &WotsPublicOf<H>, signer: Role, available: Amount, fee: Amount, floors: Amount) -> Result<Vec<TxOut>> {
+    let payout = t.payout();
+    payout.check()?;
     let total = available.checked_sub(fee).ok_or_else(|| anyhow::anyhow!("the fee exceeds the output"))?;
     let reserves = t.reserves().checked_sub(floors).filter(|r| *r >= t.reserve_alice).ok_or_else(|| anyhow::anyhow!("the floors {floors} exceed the hub's reserve"))?;
     ensure!(total >= t.v_max() + reserves, "{total} cannot pay V_max {} and the reserves less the floors", t.v_max());
-    let mut outs: Vec<TxOut> = (t.low_bits..t.bits).map(|i| Ok(TxOut { value: t.unit * (1u64 << i), script_pubkey: bit_tree_signed(ctx, i, b_key, signer)?.script_pubkey() })).collect::<Result<_>>()?;
+    let mut outs: Vec<TxOut> = payout.paid_bits().map(|i| Ok(TxOut { value: t.unit * payout.bit_units(i), script_pubkey: bit_tree_signed(ctx, i, b_key, signer)?.script_pubkey() })).collect::<Result<_>>()?;
     let reserve = |value| -> Result<TxOut> { Ok(TxOut { value, script_pubkey: reserve_tree_signed(ctx, t, b_key, signer)?.script_pubkey() }) };
     match signer {
         Role::User => outs.push(reserve(reserves)?),
@@ -267,4 +299,20 @@ pub fn default_outputs(ctx: &ContractCtx, t: &Terms, available: Amount, fee: Amo
 pub fn default_leaf(ctx: &ContractCtx, t_close: u32) -> Leaf {
     let b = ctx.two_of_two_verify(Builder::new().cltv(t_close));
     Leaf::new("default", b.push_int(1).into_script(), Timelock::cltv(t_close))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The payout of the terms, by which their words are made and read
+    /// (`lichen_payout`'s tests).
+    #[test]
+    fn the_terms_payout_is_theirs() {
+        let t = Terms { id: 1, unit: Amount::from_sat(512), bits: 14, low_bits: 0, deposit: 0, t_close: 0, reserve_alice: Amount::ZERO, reserve_hub: Amount::ZERO, rest: 7_054 };
+        assert_eq!(t.payout(), Payout { bits: 14, low_bits: 0, rest: 7_054 });
+        assert_eq!(t.v_max_units(), 23_437);
+        assert_eq!(t.v_max(), Amount::from_sat(23_437 * 512));
+        assert_eq!(t.reserve_index(), 15);
+    }
 }
