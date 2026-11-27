@@ -200,8 +200,13 @@ impl Graph {
         self.core().tree(first.leaf)
     }
     /// `assert`'s leaf: π1's digits under the hub's Lamport key, π2 and π3
-    /// beside them (so that the user can check the whole proof from the
-    /// chain).
+    /// beside them, so that the user can check the whole proof from the
+    /// chain. Only π1 is signed: whoever relays or mines `assert` can
+    /// replace π2 and π3, its txid the same. Then the proof on chain no
+    /// longer verifies, and she challenges a true assertion: the hub
+    /// answers on the proof it made, not the chain's
+    /// (`lichen_proto::setup::Asserted::answered_on`), and she loses only
+    /// her challenge's fee.
     fn assert_leaf(&self) -> Leaf {
         let (b, tl) = signed(&self.ctx(), after(POST_CSV));
         ok_leaf("assert", self.tail.lamport.verify(b).push_opcode(OP_2DROP), tl)

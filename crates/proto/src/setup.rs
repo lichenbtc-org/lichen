@@ -101,3 +101,41 @@ pub struct Asserted {
     pub preimages: Vec<lichen_babe::reveal::Preimage>,
     pub proof: Option<ark_groth16::Proof<ark_bn254::Bn254>>,
 }
+
+impl Asserted {
+    /// The proof the hub answers a challenge on: `own`, the one it made
+    /// and asserted, if it signs the π1 on chain; else the one on chain.
+    /// `assert`'s leaf checks π1's digits but not π2 and π3 beside them,
+    /// so whoever relays or mines it can replace those, its txid the
+    /// same, and the proof on chain no longer verify.
+    pub fn answered_on(&self, own: Option<ark_groth16::Proof<ark_bn254::Bn254>>) -> Option<ark_groth16::Proof<ark_bn254::Bn254>> {
+        own.filter(|p| lichen_babe::gadget::input(&p.a) == self.bits).or_else(|| self.proof.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Asserted;
+    use lichen_babe::statement::mock_prove;
+
+    fn asserted(proof: &ark_groth16::Proof<ark_bn254::Bn254>, on_chain: bool) -> Asserted {
+        let bits = lichen_babe::gadget::input(&proof.a);
+        let digits = lichen_babe::setup::digits(&bits);
+        Asserted { digits, bits, preimages: vec![], proof: on_chain.then(|| proof.clone()) }
+    }
+
+    #[test]
+    fn a_challenge_is_answered_on_the_hubs_proof_whatever_pi2_and_pi3_the_chain_shows() {
+        let proof = mock_prove(b"journal");
+        // π2 and π3 replaced: no proof on chain, the hub's own answers.
+        let replaced = asserted(&proof, false);
+        assert_eq!(replaced.answered_on(Some(proof.clone())), Some(proof.clone()));
+        assert_eq!(replaced.answered_on(None), None);
+        // Another π1 than its own (say, of another journal): the chain's.
+        let other = mock_prove(b"another journal");
+        assert_eq!(replaced.answered_on(Some(other.clone())), None);
+        let intact = asserted(&proof, true);
+        assert_eq!(intact.answered_on(Some(other)), Some(proof.clone()));
+        assert_eq!(intact.answered_on(None), Some(proof));
+    }
+}
