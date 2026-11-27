@@ -22,6 +22,7 @@ use lichen_btc::script::BuilderExt;
 use lichen_btc::taptree::{Leaf, TapTree};
 use lichen_btc::tx::Timelock;
 use crate::keys::{ContractCtx, Role};
+use lichen_payout::Payout;
 use lichen_wots::{Chain, WotsExt, WotsPublicOf};
 
 /// A contract's terms.
@@ -51,7 +52,7 @@ pub struct Terms {
     /// units. 0, none; else `2^low_bits <= R < 2^K` and `K <= 31`: below
     /// `2^K` the binary outputs pay `0..=2^K - 1` and, with `R`'s,
     /// `R..=V_max`, which meet. Bit `K` of the signed word selects it
-    /// ([`Terms::word`]).
+    /// ([`Payout::word`]).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub rest: u32,
 }
@@ -63,60 +64,15 @@ fn is_zero(n: &u32) -> bool {
 impl Terms {
     /// `V_max` in units: the binary outputs' `2^K - 1` and `R`.
     pub fn v_max_units(&self) -> u64 {
-        (1u64 << self.bits) - 1 + u64::from(self.rest)
+        self.payout().v_max()
     }
     pub fn v_max(&self) -> Amount {
         self.unit * self.v_max_units()
     }
-    /// Refused unless `R` is none, or an output of at least `2^low_bits`
-    /// units below `2^K`, with bit `K` in the 32-bit word.
-    pub fn check_rest(&self) -> Result<()> {
-        ensure!(self.bits <= 32 && self.low_bits <= self.bits, "a payout of {} bits, {} low", self.bits, self.low_bits);
-        if self.rest > 0 {
-            ensure!(self.bits <= 31, "a rest output beyond the word's 32 bits");
-            ensure!(u64::from(self.rest) < 1u64 << self.bits, "a rest of {} units, not below 2^{}", self.rest, self.bits);
-            ensure!(u64::from(self.rest) >= 1u64 << self.low_bits, "a rest of {} units, below 2^{}", self.rest, self.low_bits);
-        }
-        Ok(())
-    }
-    /// The word a party signs to be paid `amount` units: `amount` itself
-    /// if the binary outputs pay it (at most `2^K - 1`), else bit `K` set,
-    /// `R` selected, over `amount - R` in the binary outputs. Fixed: a
-    /// party that signs again after a restart must sign the same word, or
-    /// it signed two.
-    pub fn word(&self, amount: u64) -> Result<u32> {
-        self.check_rest()?;
-        ensure!(amount <= self.v_max_units(), "{amount} units, above the cap of {}", self.v_max_units());
-        let binary = (1u64 << self.bits) - 1;
-        let word = match amount > binary {
-            true => (1u64 << self.bits) | (amount - u64::from(self.rest)),
-            false => amount,
-        };
-        Ok(word as u32)
-    }
-    /// What a signed `word` counts, in units: the word itself, but with
-    /// `R`, whose bit `K` counts `R`, not `2^K`. Bits above `K` count as
-    /// they would in a number (no output pays them), so a word is never
-    /// paid more on chain than it counts, and the outputs it selects pay it
-    /// less only by its bits below `low_bits`. Total: any word counts.
-    pub fn amount(&self, word: u32) -> u64 {
-        let k = 1u64 << self.bits;
-        match self.rest > 0 && u64::from(word) & k != 0 {
-            true => u64::from(word) - k + u64::from(self.rest),
-            false => u64::from(word),
-        }
-    }
-    /// The bits of the signed word with an output: `low_bits..K`, and `K`
-    /// with `R`.
-    pub fn paid_bits(&self) -> std::ops::Range<u32> {
-        self.low_bits..self.bits + u32::from(self.rest > 0)
-    }
-    /// Bit `i`'s output, in units: `2^i`, or `R` at `K`.
-    pub fn bit_units(&self, i: u32) -> u64 {
-        match i == self.bits {
-            true => u64::from(self.rest),
-            false => 1u64 << i,
-        }
+    /// The payout's outputs, by which a signed word selects them and
+    /// counts ([`Payout`]): `K`, `low_bits` and `R`.
+    pub fn payout(&self) -> Payout {
+        Payout { bits: self.bits, low_bits: self.low_bits, rest: self.rest }
     }
     /// The index `equiv_b` takes on the reserve output: `K`, after the bit
     /// outputs', or `K + 1` with `R`'s output at `K`.
@@ -299,11 +255,12 @@ pub fn payout_less<H: Chain>(ctx: &ContractCtx, t: &Terms, b_key: &WotsPublicOf<
 /// it, a signer that signed a second value can take the other's bits by
 /// its own leaves. Paying the hub's value, that duty is Alice's.
 pub fn payout_less_signed<H: Chain>(ctx: &ContractCtx, t: &Terms, b_key: &WotsPublicOf<H>, signer: Role, available: Amount, fee: Amount, floors: Amount) -> Result<Vec<TxOut>> {
-    t.check_rest()?;
+    let payout = t.payout();
+    payout.check()?;
     let total = available.checked_sub(fee).ok_or_else(|| anyhow::anyhow!("the fee exceeds the output"))?;
     let reserves = t.reserves().checked_sub(floors).filter(|r| *r >= t.reserve_alice).ok_or_else(|| anyhow::anyhow!("the floors {floors} exceed the hub's reserve"))?;
     ensure!(total >= t.v_max() + reserves, "{total} cannot pay V_max {} and the reserves less the floors", t.v_max());
-    let mut outs: Vec<TxOut> = t.paid_bits().map(|i| Ok(TxOut { value: t.unit * t.bit_units(i), script_pubkey: bit_tree_signed(ctx, i, b_key, signer)?.script_pubkey() })).collect::<Result<_>>()?;
+    let mut outs: Vec<TxOut> = payout.paid_bits().map(|i| Ok(TxOut { value: t.unit * payout.bit_units(i), script_pubkey: bit_tree_signed(ctx, i, b_key, signer)?.script_pubkey() })).collect::<Result<_>>()?;
     let reserve = |value| -> Result<TxOut> { Ok(TxOut { value, script_pubkey: reserve_tree_signed(ctx, t, b_key, signer)?.script_pubkey() }) };
     match signer {
         Role::User => outs.push(reserve(reserves)?),
@@ -348,74 +305,14 @@ pub fn default_leaf(ctx: &ContractCtx, t_close: u32) -> Leaf {
 mod tests {
     use super::*;
 
-    fn terms(bits: u32, low_bits: u32, rest: u32) -> Terms {
-        Terms { id: 1, unit: Amount::from_sat(1), bits, low_bits, deposit: 0, t_close: 0, reserve_alice: Amount::ZERO, reserve_hub: Amount::ZERO, rest }
-    }
-
-    /// What the outputs a word selects pay, in units.
-    fn paid(t: &Terms, word: u32) -> u64 {
-        t.paid_bits().filter(|i| (word >> i) & 1 == 1).map(|i| t.bit_units(i)).sum()
-    }
-
-    /// Every amount up to the cap has a word that counts it, and the
-    /// outputs it selects pay it but for its bits below `low_bits`; any
-    /// word is paid at most what it counts.
+    /// The payout of the terms, by which their words are made and read
+    /// (`lichen_payout`'s tests).
     #[test]
-    fn every_amount_is_paid_by_its_word() {
-        for bits in 1..=7 {
-            for low_bits in 0..=bits.min(3) {
-                for rest in std::iter::once(0).chain((1u32 << low_bits)..(1 << bits)) {
-                    let t = terms(bits, low_bits, rest);
-                    t.check_rest().unwrap();
-                    for amount in 0..=t.v_max_units() {
-                        let word = t.word(amount).unwrap();
-                        assert_eq!(t.amount(word), amount, "{t:?}: {amount}");
-                        let short = amount - paid(&t, word);
-                        assert!(short < 1 << low_bits, "{t:?}: {amount} paid {short} short");
-                    }
-                    assert!(t.word(t.v_max_units() + 1).is_err());
-                    for word in 0..(4u32 << bits) {
-                        assert!(paid(&t, word) <= t.amount(word), "{t:?}: word {word}");
-                    }
-                }
-            }
-        }
-    }
-
-    /// No rest, the word is the amount, as before there was one; the
-    /// words of a rest frozen (a restarted signer signs the same).
-    #[test]
-    fn the_words_are_fixed() {
-        let none = terms(10, 0, 0);
-        assert_eq!(none.v_max_units(), 1_023);
-        assert_eq!(none.paid_bits(), 0..10);
-        for a in [0, 1, 300, 1_023] {
-            assert_eq!(none.word(a).unwrap(), a as u32);
-        }
-        assert_eq!(none.amount(u32::MAX), u64::from(u32::MAX), "no rest: the word as a number");
-        // 12 units: 1, 2, 4 and 5
-        let twelve = terms(3, 0, 5);
-        assert_eq!(twelve.v_max_units(), 12);
-        assert_eq!((twelve.paid_bits(), twelve.bit_units(3)), (0..4, 5));
-        assert_eq!([0, 7, 8, 10, 12].map(|a| twelve.word(a).unwrap()), [0, 7, 0b1011, 0b1101, 0b1111]);
-        // 23 437 units of 512 sats (12M sats): 14 bits and 7 054
-        let t = terms(14, 0, 7_054);
+    fn the_terms_payout_is_theirs() {
+        let t = Terms { id: 1, unit: Amount::from_sat(512), bits: 14, low_bits: 0, deposit: 0, t_close: 0, reserve_alice: Amount::ZERO, reserve_hub: Amount::ZERO, rest: 7_054 };
+        assert_eq!(t.payout(), Payout { bits: 14, low_bits: 0, rest: 7_054 });
         assert_eq!(t.v_max_units(), 23_437);
-        assert_eq!(t.word(16_383).unwrap(), 16_383);
-        assert_eq!(t.word(16_384).unwrap(), (1 << 14) | 9_330);
-        assert_eq!(t.word(23_437).unwrap(), (1 << 15) - 1);
-        assert_eq!(t.amount((1 << 14) | 9_330), 16_384);
-    }
-
-    /// A rest is an output (at least `2^low_bits`) below `2^K`, its bit in
-    /// the word.
-    #[test]
-    fn a_rest_is_checked() {
-        assert!(terms(10, 9, 511).check_rest().is_err());
-        assert!(terms(10, 9, 512).check_rest().is_ok());
-        assert!(terms(10, 0, 1_024).check_rest().is_err());
-        assert!(terms(32, 0, 1).check_rest().is_err());
-        assert!(terms(31, 0, 1).check_rest().is_ok());
-        assert!(terms(32, 0, 0).check_rest().is_ok());
+        assert_eq!(t.v_max(), Amount::from_sat(23_437 * 512));
+        assert_eq!(t.reserve_index(), 15);
     }
 }

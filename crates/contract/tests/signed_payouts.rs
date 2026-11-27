@@ -16,6 +16,7 @@ use lichen_btc::sighash::sign_tapscript;
 use lichen_btc::taptree::{Leaf, TapTree};
 use lichen_btc::tx::{build_spend, build_tx, Timelock};
 use lichen_btc::witness::tapscript_witness;
+use lichen_contract::payout::Word;
 use lichen_contract::*;
 use lichen_wots::{WotsParams, WotsSecret, WotsSig};
 
@@ -118,10 +119,10 @@ fn a_payout_the_hub_signed_on_regtest() {
 
     // Each party sweeps what it owns: hers at once, the hub's after delta.
     let payout = pay(&rt, outs.clone());
-    let hers = core.owned(&payout, &key, Role::Hub, B_REDUCED, Role::User).unwrap();
+    let hers = core.owned(&payout, &key, Role::Hub, Word::new(B_REDUCED), Role::User).unwrap();
     assert_eq!(hers.iter().map(|o| o.leaf.as_str()).collect::<Vec<_>>(), ["alice_bit_2", "alice_bit_3", "alice_bit_5", "alice_bit_8"]);
     rt.send_and_confirm(&sweep(&hers, &f.alice.payment, &signed)).unwrap();
-    let its = core.owned(&payout, &key, Role::Hub, B_REDUCED, Role::Hub).unwrap();
+    let its = core.owned(&payout, &key, Role::Hub, Word::new(B_REDUCED), Role::Hub).unwrap();
     assert_eq!(its.len(), 7, "six clear bits and its reserve");
     assert_eq!(its.last().unwrap().leaf, "hub_reserve");
     let swept = sweep(&its, &f.hub.payment, &signed);
@@ -164,9 +165,9 @@ fn a_payout_with_a_rest_on_regtest() {
     assert_eq!(outs.len(), t.bits as usize + 3);
     assert_eq!(outs[t.bits as usize].value, Amount::from_sat(477_000));
     assert_eq!(outs[t.bits as usize + 1], TxOut { value: t.reserve_alice, script_pubkey: f.pubs[0].payout_spk.clone() });
-    let word = t.word(1_200).unwrap();
-    assert_eq!(word, (1 << 10) | 723);
-    let signed = wire(&f.sign(word));
+    let word = t.payout().word(1_200).unwrap();
+    assert_eq!(word, Word::new((1 << 10) | 723));
+    let signed = wire(&f.sign(word.to_u32()));
 
     let payout = pay(&rt, outs.clone());
     let hers = core.owned(&payout, &key, Role::Hub, word, Role::User).unwrap();
@@ -181,7 +182,7 @@ fn a_payout_with_a_rest_on_regtest() {
 
     // two values signed: she takes the rest output and the hub's reserve
     let payout = pay(&rt, outs);
-    let equiv: Vec<Vec<u8>> = wire(&f.sign(word - 1)).into_iter().chain(signed).collect();
+    let equiv: Vec<Vec<u8>> = wire(&f.sign(word.to_u32() - 1)).into_iter().chain(signed).collect();
     let rest = bit_tree_signed(&ctx, t.bits, &key, Role::Hub).unwrap();
     rt.send_and_confirm(&spend(&payout, t.bits, &rest, &format!("equiv_b_{}", t.bits), equiv.clone(), &f.alice.payment)).unwrap();
     let reserve = reserve_tree_signed(&ctx, &t, &key, Role::Hub).unwrap();

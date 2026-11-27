@@ -20,6 +20,7 @@ use lichen_btc::tx::{build_spend, Timelock};
 use lichen_btc::musig::{self, KeyAgg, Partial, PubNonce, SecNonce};
 use lichen_btc::witness::tapscript_witness;
 use crate::keys::{ContractCtx, ContractParams, PartyPubKeys, Role};
+use lichen_payout::Word;
 use lichen_wots::{Chain, WotsPublicOf};
 
 use crate::leaves::{bit_tree_signed, default_leaf, default_outputs, payout_less_signed, reserve_tree_signed, Terms};
@@ -115,7 +116,7 @@ impl<'a> Core<'a> {
         Presign::new("default", tree, "default", funding, &c_out, outs, false)
     }
     /// The outputs paying `b` in bits (read from Alice's signature under
-    /// `b_key`, [`Terms::word`]) and both reserves to Alice, the rest to the hub;
+    /// `b_key`, [`lichen_payout::Payout::word`]) and both reserves to Alice, the rest to the hub;
     /// `available` is what the output carries, the contract's value less
     /// the floors and anchors of the links played, which come out of the
     /// hub's forfeited reserve (D-J2).
@@ -142,27 +143,28 @@ impl<'a> Core<'a> {
     }
     /// `party`'s outputs of `payout`, a terminal paying the word `value`
     /// that `signer` signed under `key` ([`payout_less_signed`], the word as
-    /// signed, not as [`Terms::word`] would make it of what it counts): for
+    /// signed, not as [`lichen_payout::Payout::word`] would make it of what it counts): for
     /// each bit of the word with an output, the set ones Alice's and the
     /// clear ones the hub's;
     /// and the signer's reserve output, if any. The signer's wait `delta`
     /// (the other's window on a second signed value); the other's don't.
     /// In output order; an output not of its script (none paid) is
     /// skipped. Not the other party's outputs by `equiv_b`.
-    pub fn owned<H: Chain>(&self, payout: &Transaction, key: &WotsPublicOf<H>, signer: Role, value: u32, party: Role) -> Result<Vec<Owned>> {
+    pub fn owned<H: Chain>(&self, payout: &Transaction, key: &WotsPublicOf<H>, signer: Role, value: Word, party: Role) -> Result<Vec<Owned>> {
         let (t, ctx) = (self.terms, self.ctx());
         let txid = payout.compute_txid();
         let sequence = if party == signer { Sequence::from_height(self.params.delta) } else { Sequence::ENABLE_RBF_NO_LOCKTIME };
         let mut outs: Vec<(u32, TapTree, String, bool)> = vec![];
-        for i in t.paid_bits() {
-            let set = (value >> i) & 1 == 1;
+        let paid = t.payout().paid_bits();
+        for i in paid.clone() {
+            let set = value.is_set(i);
             if set == (party == Role::User) {
                 let name = if set { format!("alice_bit_{i}") } else { format!("hub_bit_{i}") };
                 outs.push((i - t.low_bits, bit_tree_signed(&ctx, i, key, signer)?, name, true));
             }
         }
         if party == signer {
-            let bits = t.paid_bits().len() as u32;
+            let bits = paid.len() as u32;
             let (vout, name) = match signer {
                 Role::User => (bits, "alice_reserve"),
                 Role::Hub => (bits + 1, "hub_reserve"),
