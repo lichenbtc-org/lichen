@@ -1,0 +1,10 @@
+[package]
+name = "lichen-payout"
+description = "What a word signed on a Lichen payout means: the outputs it selects and the units it counts (no_std)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# No dependencies, and no_std: a statement's guest (an L2's zkVM program)
+# reads a signed word with this crate, as lichen-contract builds the payout.
+[dependencies]

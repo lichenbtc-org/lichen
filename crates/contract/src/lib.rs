@@ -10,6 +10,10 @@ pub mod graph;
 pub mod keys;
 pub mod leaves;
 
+/// What a signed word means ([`Terms::payout`]), the one definition an
+/// L2's statement reads it by too.
+pub use lichen_payout as payout;
+
 pub use graph::*;
 pub use keys::*;
 pub use leaves::*;
