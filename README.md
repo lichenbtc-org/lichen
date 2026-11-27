@@ -6,8 +6,8 @@ A layer 2 ledger whose tokens a hub issues, each user's holdings up to a cap col
 
 -------
 
-CAVEAT: Do not use with real money. Most importantly, the code is unaudited either by humans or LLMs, almost all written by one LLM (extensively *tested* but not *audited*).
+CAVEAT: the code is not fully audited either by humans or LLMs. Not ready for production use.
 
-This README and the [main design paper](./papers/lichen.pdf) are written by me. Most of the lower level documentation and instructions are LLM generated.
+This README and the [main design paper](./papers/lichen.pdf) are human generated. Most of the lower level documentation and instructions are LLM generated.
 
-*Want to try it* - with a wallet, against a hub someone is running: go to the other repos in this org that describe prototype L2s built from lichen: [gLichen](https://github.com/lichenbtc-org/glichen) and [vLichen](https://github.com/lichenbtc-org/vlichen) for instructions and details on how they work.
+This code functions as a library for creating Lichen-based L2s.
